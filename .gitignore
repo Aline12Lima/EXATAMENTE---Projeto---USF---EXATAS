@@ -1,0 +1,18 @@
+# Bloquear chaves de API e arquivos de configuração locais
+backend/.env
+.env
+
+# Bloquear o ambiente virtual do Python
+backend/venv/
+venv/
+
+# Ignorar arquivos temporários do Python e cache
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+backend/__pycache__/
+
+# Ignorar arquivos de configuração do próprio sistema ou VS Code (opcional)
+.vscode/
+.DS_Store
