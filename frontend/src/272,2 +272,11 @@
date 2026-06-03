@@ -85,8 +85,7 @@ export default function App() {
     setDadosConteudo(null);
 
     try {
-      const apiUrl = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
-      const response = await fetch(`${apiUrl}/gerar-conteudo`, {
+      const response = await fetch("http://127.0.0.1:8000/gerar-conteudo", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -109,29 +108,13 @@ export default function App() {
       const dados = await response.json();
 
       let textoBruto = dados.conteudo;
-      let jsonExtraido = null;
 
-      // 1. Tenta pegar do bloco markdown padrão
-      const regexJson = /```(?:json)?\s*(\{[\s\S]*?\})\s*```/;
+      const regexJson = /```json\s*([\s\S]*?)\s*```/;
       const match = textoBruto.match(regexJson);
 
       if (match && match[1]) {
-        jsonExtraido = match[1];
-        textoBruto = textoBruto.replace(regexJson, "");
-      } else {
-        // 2. FALLBACK SUPER ROBUSTO: Procura o objeto JSON diretamente no texto
-        const fallbackMatch = textoBruto.match(
-          /(\{[\s\S]*"mapa_cronograma"[\s\S]*\})/,
-        );
-        if (fallbackMatch && fallbackMatch[1]) {
-          jsonExtraido = fallbackMatch[1];
-          textoBruto = textoBruto.replace(fallbackMatch[1], "");
-        }
-      }
-
-      if (jsonExtraido) {
         try {
-          const jsonLimpo = jsonExtraido.trim();
+          const jsonLimpo = match[1].trim();
 
           const objetoMapas = JSON.parse(jsonLimpo);
           if (objetoMapas.mapa_cronograma) {
@@ -144,6 +127,8 @@ export default function App() {
               normalizarDadosReactFlow(objetoMapas.mapa_conteudo),
             );
           }
+
+          textoBruto = textoBruto.replace(regexJson, "");
         } catch (err) {
           console.error("❌ [DEBUG ERRO] Falha ao fazer o JSON.parse:", err);
         }
@@ -155,18 +140,12 @@ export default function App() {
 
       // 🌟 ESTEIRA DE LIMPEZA: Força o texto a ficar no padrão exato do KaTeX
       let textoLimpo = textoBruto
-        .replace(/\\{1,2}\$/g, "$") // Remove escapes de cifrão: \$ -> $
-        .replace(/\\{1,2}\[/g, "\n\n$$\n") // Converte \[ em bloco $$ com quebra de linha
-        .replace(/\\{1,2}\]/g, "\n$$\n\n") // Converte \] em bloco $$ com quebra de linha
-        .replace(/\\{1,2}\(/g, " $") // Converte \( em inline $
-        .replace(/\\{1,2}\)/g, "$ ") // Converte \) em inline $
-        .replace(/\n\s*\$\$\s*\n/g, "\n\n$$\n") // Garante que blocos $$ fiquem isolados
-        .replace(/([a-zA-ZÀ-ÿ0-9])\$/g, "$1 $") // Afasta a palavra colada no cifrão inicial (MAtriz$A -> MAtriz $A)
-        .replace(/\$([a-zA-ZÀ-ÿ0-9])/g, "$ $1") // Afasta a palavra colada no cifrão final ($Aque -> $A que)
-        .replace(/\\\s+(?=\d|&|-)/g, "\\\\ ") // Força a correção de matrizes quebradas enviadas com '\ ' em vez de '\\'
-        .replace(/\$\s+/g, "$") // Remove espaço após o $ inicial: $ x -> $x
-        .replace(/\s+\$/g, "$") // Remove espaço antes do $ final: x $ -> x$
-        .replace(/(\d+)\s+(m\/s|kg|m|s|N|J|W|Pa)/g, "$$1 \\, \\text{$2}$"); // Tenta capturar unidades perdidas
+        .replace(/\\\$/g, "$") // Transforma \$ em $ puro
+        .replace(/\\\\/g, "\\") // Remove barras duplas inúteis
+        .replace(/\\\[/g, "$$") // Transforma bloco \[ no padrão $$
+        .replace(/\\\]/g, "$$") // Transforma bloco \] no padrão $$
+        .replace(/\\\(/g, "$") // Transforma linha \( no padrão $
+        .replace(/\\\)/g, "$"); // Transforma linha \) no padrão $
 
       setResultadoHtml(marked.parse(textoLimpo));
     } catch (erroGeral) {
@@ -239,7 +218,7 @@ export default function App() {
         <div className="container mx-auto">
           <h1 className="text-3xl font-bold">
             📐 Exata
-            <span className="text-yellow-200 drop-shadow-[0_0_10px_rgba(254,240,138,0.9)] transition-all duration-50">
+            <span className="text-yellow-200 drop-shadow-[0_0_10px_rgba(254,240,138,0.9)] transition-all duration-500">
               Mente
             </span>
           </h1>
@@ -251,21 +230,18 @@ export default function App() {
 
       {/* Main Container */}
       <main className="container mx-auto p-4 max-w-4xl mt-8">
-        {/* Seção Informativa: Como funciona */}
-        <section className="mb-8 bg-white p-6 rounded-xl shadow-sm border border-gray-200">
-          <h2 className="text-xl font-bold text-gray-800 mb-3 flex items-center gap-2">
-            🚀 Como funciona?
+        <section className="mb-10 text-center">
+          <h2 className="text-2xl font-bold text-gray-800 mb-4">
+            Como funciona?
           </h2>
-          <p className="text-gray-600 leading-relaxed">
-            O <strong>ExataMente</strong> utiliza inteligência artificial para
-            transformar seu jeito de aprender. Com esta ferramenta, você gera
-            materiais personalizados com{" "}
+          <p className="text-gray-600 text-lg leading-relaxed max-w-3xl mx-auto">
+            O <strong>ExataMente</strong> é seu aliado nos estudos. Com esta
+            ferramenta, você gera materiais personalizados com{" "}
             <strong>
               mapas mentais interativos, resumos didáticos e exercícios práticos
             </strong>
-            . Buscamos conteúdos de fontes seguras para garantir que você estude
-            exatamente o que precisa para seus testes e provas, de forma rápida
-            e eficiente.
+            . Buscamos conteúdos de fontes seguras para garantir um aprendizado
+            eficiente e alinhado à BNCC.
           </p>
         </section>
 

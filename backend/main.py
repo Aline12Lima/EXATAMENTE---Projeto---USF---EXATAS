@@ -78,24 +78,21 @@ class InputTema(BaseModel):
 async def gerar_conteudo(dados: InputTema):
     try:
         # 1. BASE DO PROMPT: Aqui entram as regras absolutas para a IA
-        prompt_instrucoes = f"""
+        prompt_instrucoes = rf"""
         Você é um tutor de física e matemática especialista no Ensino Médio brasileiro (diretrizes BNCC).
         Gere um plano e material de estudo didático focado no tema "{dados.tema}" para um aluno do {dados.ano} ano do Ensino Médio.
         
         O FOCO DO ALUNO É: {dados.objetivo}.
         O TEMPO DISPONÍVEL DO ALUNO É: {dados.tempo}. Adapte a profundidade, o cronograma e as dicas com base estritamente neste período.
-        REGRAS ABSOLUTAS PARA MATEMÁTICA (LATEX):
-        1. Escreva TODAS as fórmulas e equações estritamente em formato LaTeX.
-        2. Fórmulas no meio do texto: use um único cifrão puro ($). Ex: A força $F$ e a massa $m$.
-        3. Equações em destaque: use duplo cifrão puro ($$). OBRIGATÓRIO: Pule uma linha antes e uma linha depois dos duplos cifrões! Eles devem ficar isolados!
-        Exemplo correto:
-        O texto acaba aqui.
-        
-        $$F = m \cdot a$$
-        
-        E o texto continua aqui.
-        4. NUNCA escape os cifrões com barras invertidas.
-        5. NUNCA escape as barras do LaTeX (use \frac em vez de \\frac).
+        REGRAS CRÍTICAS DE FORMATAÇÃO (LATEX):
+        1. Use LaTeX para TODA variável, número, unidade ou fórmula.
+        2. Fórmulas Inline: Use $...$. OBRIGATÓRIO: Sempre coloque um espaço antes do primeiro cifrão e depois do último cifrão. NUNCA grude nas palavras (Errado: MAtriz$A$que. Correto: MAtriz $A$ que).
+        3. Fórmulas em Bloco: Use $$...$$. OBRIGATÓRIO: O bloco $$ deve estar em uma linha própria, com uma linha em branco acima e uma abaixo.
+        4. Matrizes e Sistemas: USE OBRIGATORIAMENTE blocos $$...$$. Para pular linhas em matrizes, use `\\\\` (quatro barras no texto) para garantir que o KaTeX receba `\\`. Exemplo: `\begin{{bmatrix}} 1 & 2 \\\\ 3 & 4 \end{{bmatrix}}`.
+        5. PROIBIDO caracteres Unicode (Δ, π, Σ, etc). Use \Delta, \pi, \sum.
+        6. Unidades de medida: Use \text{{...}} dentro do LaTeX. Ex: $10 \, \text{{m/s}}^2$.
+        7. NUNCA use barras invertidas para escapar cifrões (use $, nunca \$).
+        8. Para frações, use sempre \frac{{a}}{{b}}.
         
         Você DEVE construir a resposta em formato Markdown incluindo APENAS as seções que foram solicitadas abaixo:
         """
@@ -128,7 +125,7 @@ async def gerar_conteudo(dados: InputTema):
         if dados.mapa:
             prompt_instrucoes += f"""
             # 🗺️ Mapas Mentais para React Flow (JSON)
-            Gere obrigatoriamente a estrutura de dados estruturada para alimentar a biblioteca React Flow. 
+            Gere OBRIGATORIAMENTE a estrutura de dados para o React Flow. 
             O conteúdo deve conter chaves estruturadas em formato JSON válido, contidas estritamente dentro de um único bloco de código marcado com ```json.
             
             O formato deve conter duas chaves principais: "mapa_cronograma" e "mapa_conteudo".
