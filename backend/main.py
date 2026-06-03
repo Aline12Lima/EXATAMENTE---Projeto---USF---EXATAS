@@ -1,4 +1,5 @@
 import os
+import json
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -6,6 +7,39 @@ import google.generativeai as genai
 from dotenv import load_dotenv
 
 load_dotenv()
+MODELOS_DISPONIVEIS = [
+    "gemini-2.5-flash-lite",  # Principal
+    "gemini-2.5-flash",  # Secundário (Fallback 1)
+    "gemini-1.5-pro",  # Terciário (Fallback 2)
+]
+
+
+def gerar_conteudo_com_fallback(prompt: str):
+    ultimo_erro = None
+
+    # O loop percorre a lista até um modelo dar certo
+    for nome_modelo in MODELOS_DISPONIVEIS:
+        try:
+            print(f"Tentando gerar com: {nome_modelo}...")
+            modelo = genai.GenerativeModel(nome_modelo)
+
+            resposta = modelo.generate_content(prompt)
+
+            # Se deu certo, retorna a resposta e interrompe o loop
+            return resposta.text
+
+        except Exception as e:
+            # Captura o erro (ex: cota excedida) e salva para log
+            ultimo_erro = str(e)
+            print(f"Falha no {nome_modelo}: {ultimo_erro}. Passando para o próximo...")
+            continue  # Pula para a próxima iteração do loop
+
+    # Se o loop terminar e todos falharem, retorna um erro amigável para o frontend
+    raise HTTPException(
+        status_code=503,
+        detail="Todos os modelos atingiram o limite de requisições. Tente novamente em alguns instantes.",
+    )
+
 
 app = FastAPI()
 
@@ -43,18 +77,30 @@ class InputTema(BaseModel):
 @app.post("/gerar-conteudo")
 async def gerar_conteudo(dados: InputTema):
     try:
-        model = genai.GenerativeModel("gemini-2.5-flash-lite")
-
+        # 1. BASE DO PROMPT: Aqui entram as regras absolutas para a IA
         prompt_instrucoes = f"""
         Você é um tutor de física e matemática especialista no Ensino Médio brasileiro (diretrizes BNCC).
         Gere um plano e material de estudo didático focado no tema "{dados.tema}" para um aluno do {dados.ano} ano do Ensino Médio.
         
         O FOCO DO ALUNO É: {dados.objetivo}.
         O TEMPO DISPONÍVEL DO ALUNO É: {dados.tempo}. Adapte a profundidade, o cronograma e as dicas com base estritamente neste período.
+        REGRAS ABSOLUTAS PARA MATEMÁTICA (LATEX):
+        1. Escreva TODAS as fórmulas e equações estritamente em formato LaTeX.
+        2. Fórmulas no meio do texto: use um único cifrão puro ($). Ex: A força $F$ e a massa $m$.
+        3. Equações em destaque: use duplo cifrão puro ($$). OBRIGATÓRIO: Pule uma linha antes e uma linha depois dos duplos cifrões! Eles devem ficar isolados!
+        Exemplo correto:
+        O texto acaba aqui.
+        
+        $$F = m \cdot a$$
+        
+        E o texto continua aqui.
+        4. NUNCA escape os cifrões com barras invertidas.
+        5. NUNCA escape as barras do LaTeX (use \frac em vez de \\frac).
         
         Você DEVE construir a resposta em formato Markdown incluindo APENAS as seções que foram solicitadas abaixo:
         """
 
+        # 2. SEÇÕES OPCIONAIS: Adicionadas conforme os checkboxes
         if dados.resumo:
             prompt_instrucoes += f"""
             # 📘 Resumo Didático: {dados.tema}
@@ -80,57 +126,44 @@ async def gerar_conteudo(dados: InputTema):
             """
 
         if dados.mapa:
-            # Se o usuário marcou apenas mapa e nenhuma outra caixa teórica
-            if not (
-                dados.resumo
-                or dados.explicacao
-                or dados.cotidiano
-                or dados.tecnologia
-                or dados.exercicios
-            ):
-                prompt_instrucoes += f"""
-                # 🗺️ Cronograma de Estudos por Mapas Mentais Visual ({dados.tempo})
-                O usuário optou por estudar exclusivamente através de mapas mentais visuais focados em {dados.objetivo}.
-                
-                Gere um plano de estudo prático dividido exatamente para o período de **{dados.tempo}**.
-                Para cada etapa/dia desse período, você deve apresentar um breve título descritivo e, logo em seguida, o respectivo gráfico dinâmico em formato Mermaid JS.
-                
-                Exemplo de estrutura esperada para o retorno:
-                
-                ### 🗓️ Etapa 1: Introdução ao Conteúdo
-                ```mermaid
-                mindmap
-                  root(("Tema Central"))
-                    "Subtopico 1"
-                    "Subtopico 2"
-                ```
-                
-                ### 🗓️ Etapa 2: Aprofundamento e Detalhes
-                ```mermaid
-                mindmap
-                  root(("Conceitos Avancados"))
-                    "Subtopico A"
-                    "Subtopico B"
-                ```
-                
-                (REGRAS CRUCIAIS DO MERMAID: Crie diagramas curtos e objetivos para cada dia. Cada nó com mais de uma palavra DEVE obrigatoriamente estar envolvido por aspas duplas. NUNCA utilize acentos, pontos, cedilhas ou caracteres especiais dentro dos parênteses ou aspas do Mermaid, pois isso corrompe o interpretador gráfico do frontend. Use termos como "Operacoes", "Direcao", "Sentido", "Soma vetores").
-                """
-            else:
-                # Se ele marcou mapa mental junto com resumos teóricos ou exercícios, mantém o comportamento padrão de um mapa resumo
-                prompt_instrucoes += f"""
-                # 🗺️ Mapa Mental Resumo Visual
-                ```mermaid
-                mindmap
-                  root(({dados.tema}))
-                    "Conceito"
-                      "Definicao"
-                    "Aplicacao"
-                      "Tecnologia"
-                    "Pratica"
-                      "Exercicios"
-                ```
+            prompt_instrucoes += f"""
+            # 🗺️ Mapas Mentais para React Flow (JSON)
+            Gere obrigatoriamente a estrutura de dados estruturada para alimentar a biblioteca React Flow. 
+            O conteúdo deve conter chaves estruturadas em formato JSON válido, contidas estritamente dentro de um único bloco de código marcado com ```json.
             
-            (ATENÇÃO REGRAS ESTREITAS DO MERMAID: Substitua os termos Concept, Aplicacao e Pratica do modelo acima pelas ramificações reais do assunto pesquisado. Cada nó com mais de uma palavra DEVE obrigatoriamente estar envolvido por aspas duplas, por exemplo: "Operacoes basicas" ou "Regra de tres". Nunca utilize acentos, pontos, cedilhas ou caracteres especiais dentro dos nós, pois isso impede a geração do gráfico).
+            O formato deve conter duas chaves principais: "mapa_cronograma" e "mapa_conteudo".
+            
+            Exemplo de estrutura JSON exata esperada:
+            ```json
+            {{
+              "mapa_cronograma": {{
+                "nodes": [
+                  {{ "id": "c1", "data": {{ "label": "Cronograma {dados.tempo}" }}, "position": {{ "x": 250, "y": 0 }}, "type": "input" }},
+                  {{ "id": "c2", "data": {{ "label": "Fase Inicial" }}, "position": {{ "x": 250, "y": 100 }} }}
+                ],
+                "edges": [
+                  {{ "id": "ec1-2", "source": "c1", "target": "c2", "animated": true }}
+                ]
+              }},
+              "mapa_conteudo": {{
+                "nodes": [
+                  {{ "id": "n1", "data": {{ "label": "{dados.tema}" }}, "position": {{ "x": 400, "y": 0 }}, "type": "input" }},
+                  {{ "id": "n2", "data": {{ "label": "Conceitos Fundamentais" }}, "position": {{ "x": 200, "y": 120 }} }},
+                  {{ "id": "n3", "data": {{ "label": "Aplicacoes Tecnologicas" }}, "position": {{ "x": 600, "y": 120 }} }}
+                ],
+                "edges": [
+                  {{ "id": "en1-2", "source": "n1", "target": "n2" }},
+                  {{ "id": "en1-3", "source": "n1", "target": "n3" }}
+                ]
+              }}
+            }}
+            ```
+
+            Especificações Cruciais:
+            1. No "mapa_cronograma", organize os nós sequencialmente simulando as fases de estudo ao longo de {dados.tempo} para o objetivo {dados.objetivo}.
+            2. No "mapa_conteudo", crie uma árvore SINTÉTICA (MÁXIMO ABSOLUTO DE 15 NÓS). Agrupe conceitos para garantir que o JSON NUNCA seja cortado por limite de tamanho. Detalhe os conceitos matemáticos em LaTeX e usabilidade em tecnologia.
+            3. Distribua os valores de 'x' e 'y' de maneira lógica para que os nós não fiquem sobrepostos (aumente o 'y' a cada nível que descer na árvore).
+            4. NUNCA adicione textos ou comentários fora do bloco de código ```json. Não utilize aspas duplas dentro das strings das labels.
             """
 
         if dados.exercicios:
@@ -139,8 +172,10 @@ async def gerar_conteudo(dados: InputTema):
             [Apresente exercícios práticos compatíveis com o objetivo do aluno, incluindo a resolução passo a passo comentada]
             """
 
-        response = model.generate_content(prompt_instrucoes)
-        return {"conteudo": response.text}
+        # 3. ENVIO: Chama a função que testa os modelos em fila
+        texto_gerado = gerar_conteudo_com_fallback(prompt_instrucoes)
+
+        return {"conteudo": texto_gerado}
 
     except Exception as e:
         print(f"❌ ERRO INTERNO NO BACKEND: {str(e)}")
