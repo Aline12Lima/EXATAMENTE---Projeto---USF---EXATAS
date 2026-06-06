@@ -2,23 +2,17 @@ import os
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from google import genai
-from google.genai import types
+import google.generativeai as genai  # Mantemos a versão estável
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# ─── Modelos em ordem de preferência ───
-# flash-lite é rápido mas fraco em JSON complexo
-# flash é o melhor custo-benefício para este caso
 MODELOS_DISPONIVEIS = [
-    "gemini-2.5-flash",  # Principal — melhor para seguir JSON estruturado
-    "gemini-2.5-flash-lite",  # Fallback 1
-    "gemini-1.5-pro",  # Fallback 2
+    "gemini-1.5-flash",  # Nome correto para a versão estável
+    "gemini-1.5-pro",
 ]
 
 app = FastAPI()
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -28,37 +22,21 @@ app.add_middleware(
 )
 
 GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")
-if not GOOGLE_API_KEY:
-    raise RuntimeError(
-        "ERRO: A variável GEMINI_API_KEY não foi encontrada no arquivo .env"
-    )
-
-cliente = genai.Client(api_key=GOOGLE_API_KEY)
+genai.configure(api_key=GOOGLE_API_KEY)  # Configuração correta para a versão estável
 
 
 def gerar_conteudo_com_fallback(prompt: str) -> str:
-    ultimo_erro = None
     for nome_modelo in MODELOS_DISPONIVEIS:
         try:
             print(f"Tentando gerar com: {nome_modelo}...")
-            resposta = cliente.models.generate_content(
-                model=nome_modelo,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0.4,  # Mais determinístico — segue melhor o formato
-                    max_output_tokens=8192,
-                ),
-            )
+            model = genai.GenerativeModel(nome_modelo)  # Sintaxe correta
+            resposta = model.generate_content(prompt)  # Sintaxe correta
             return resposta.text
         except Exception as e:
-            ultimo_erro = str(e)
-            print(f"Falha no {nome_modelo}: {ultimo_erro}. Passando para o próximo...")
+            print(f"Falha no {nome_modelo}: {str(e)}")
             continue
 
-    raise HTTPException(
-        status_code=503,
-        detail="Todos os modelos atingiram o limite. Tente novamente em alguns instantes.",
-    )
+    raise HTTPException(status_code=503, detail="Modelos indisponíveis.")
 
 
 class InputTema(BaseModel):
