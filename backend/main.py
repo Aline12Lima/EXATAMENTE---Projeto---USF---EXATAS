@@ -8,8 +8,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 MODELOS_DISPONIVEIS = [
-    "gemini-1.5-flash-latest",
-    "gemini-1.5-pro-latest",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+    "gemini-1.0-pro",
 ]
 
 app = FastAPI()
@@ -23,6 +24,7 @@ app.add_middleware(
 
 GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")
 genai.configure(api_key=GOOGLE_API_KEY)  # Configuração correta para a versão estável
+
 print("MODELOS DISPONÍVEIS NA API:")
 for m in genai.list_models():
     if "generateContent" in m.supported_generation_methods:
