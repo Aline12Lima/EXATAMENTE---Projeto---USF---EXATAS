@@ -8,8 +8,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 MODELOS_DISPONIVEIS = [
-    "gemini-1.5-flash",  # Nome correto para a versão estável
-    "gemini-1.5-pro",
+    "gemini-1.5-flash-latest",
+    "gemini-1.5-pro-latest",
 ]
 
 app = FastAPI()
@@ -23,6 +23,10 @@ app.add_middleware(
 
 GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")
 genai.configure(api_key=GOOGLE_API_KEY)  # Configuração correta para a versão estável
+print("MODELOS DISPONÍVEIS NA API:")
+for m in genai.list_models():
+    if "generateContent" in m.supported_generation_methods:
+        print(m.name)
 
 
 def gerar_conteudo_com_fallback(prompt: str) -> str:
