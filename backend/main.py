@@ -10,8 +10,9 @@ load_dotenv()
 
 MODELOS_DISPONIVEIS = [
     "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    "gemini-1.5-flash",
+    "gemini-2.5-flash-lite",
+    "models/gemini-1.5-flash",  # prefixo "models/" necessário na google-genai
+    "models/gemini-1.5-pro",-
 ]
 
 app = FastAPI()
