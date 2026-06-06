@@ -2,15 +2,16 @@ import os
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import google.generativeai as genai  # Mantemos a versão estável
+from google import genai
+from google.genai import types
 from dotenv import load_dotenv
 
 load_dotenv()
 
 MODELOS_DISPONIVEIS = [
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
     "gemini-1.5-flash",
-    "gemini-1.5-pro",
-    "gemini-1.0-pro",
 ]
 
 app = FastAPI()
@@ -23,25 +24,25 @@ app.add_middleware(
 )
 
 GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")
-genai.configure(api_key=GOOGLE_API_KEY)  # Configuração correta para a versão estável
-
-print("MODELOS DISPONÍVEIS NA API:")
-for m in genai.list_models():
-    if "generateContent" in m.supported_generation_methods:
-        print(m.name)
+cliente = genai.Client(api_key=GOOGLE_API_KEY)
 
 
 def gerar_conteudo_com_fallback(prompt: str) -> str:
     for nome_modelo in MODELOS_DISPONIVEIS:
         try:
             print(f"Tentando gerar com: {nome_modelo}...")
-            model = genai.GenerativeModel(nome_modelo)  # Sintaxe correta
-            resposta = model.generate_content(prompt)  # Sintaxe correta
+            resposta = cliente.models.generate_content(
+                model=nome_modelo,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.4,
+                    max_output_tokens=8192,
+                ),
+            )
             return resposta.text
         except Exception as e:
             print(f"Falha no {nome_modelo}: {str(e)}")
             continue
-
     raise HTTPException(status_code=503, detail="Modelos indisponíveis.")
 
 
