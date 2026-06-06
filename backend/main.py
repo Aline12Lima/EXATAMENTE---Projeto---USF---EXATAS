@@ -1,45 +1,21 @@
 import os
-import json
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# ─── Modelos em ordem de preferência ───
+# flash-lite é rápido mas fraco em JSON complexo
+# flash é o melhor custo-benefício para este caso
 MODELOS_DISPONIVEIS = [
-    "gemini-2.5-flash-lite",  # Principal
-    "gemini-2.5-flash",  # Secundário (Fallback 1)
-    "gemini-1.5-pro",  # Terciário (Fallback 2)
+    "gemini-2.5-flash",  # Principal — melhor para seguir JSON estruturado
+    "gemini-2.5-flash-lite",  # Fallback 1
+    "gemini-1.5-pro",  # Fallback 2
 ]
-
-
-def gerar_conteudo_com_fallback(prompt: str):
-    ultimo_erro = None
-
-    # O loop percorre a lista até um modelo dar certo
-    for nome_modelo in MODELOS_DISPONIVEIS:
-        try:
-            print(f"Tentando gerar com: {nome_modelo}...")
-            modelo = genai.GenerativeModel(nome_modelo)
-
-            resposta = modelo.generate_content(prompt)
-
-            # Se deu certo, retorna a resposta e interrompe o loop
-            return resposta.text
-
-        except Exception as e:
-            # Captura o erro (ex: cota excedida) e salva para log
-            ultimo_erro = str(e)
-            print(f"Falha no {nome_modelo}: {ultimo_erro}. Passando para o próximo...")
-            continue  # Pula para a próxima iteração do loop
-
-    # Se o loop terminar e todos falharem, retorna um erro amigável para o frontend
-    raise HTTPException(
-        status_code=503,
-        detail="Todos os modelos atingiram o limite de requisições. Tente novamente em alguns instantes.",
-    )
-
 
 app = FastAPI()
 
@@ -52,13 +28,37 @@ app.add_middleware(
 )
 
 GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")
-
 if not GOOGLE_API_KEY:
     raise RuntimeError(
         "ERRO: A variável GEMINI_API_KEY não foi encontrada no arquivo .env"
     )
 
-genai.configure(api_key=GOOGLE_API_KEY)
+cliente = genai.Client(api_key=GOOGLE_API_KEY)
+
+
+def gerar_conteudo_com_fallback(prompt: str) -> str:
+    ultimo_erro = None
+    for nome_modelo in MODELOS_DISPONIVEIS:
+        try:
+            print(f"Tentando gerar com: {nome_modelo}...")
+            resposta = cliente.models.generate_content(
+                model=nome_modelo,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.4,  # Mais determinístico — segue melhor o formato
+                    max_output_tokens=8192,
+                ),
+            )
+            return resposta.text
+        except Exception as e:
+            ultimo_erro = str(e)
+            print(f"Falha no {nome_modelo}: {ultimo_erro}. Passando para o próximo...")
+            continue
+
+    raise HTTPException(
+        status_code=503,
+        detail="Todos os modelos atingiram o limite. Tente novamente em alguns instantes.",
+    )
 
 
 class InputTema(BaseModel):
@@ -77,103 +77,186 @@ class InputTema(BaseModel):
 @app.post("/gerar-conteudo")
 async def gerar_conteudo(dados: InputTema):
     try:
-        # 1. BASE DO PROMPT: Aqui entram as regras absolutas para a IA
-        prompt_instrucoes = rf"""
-        Você é um tutor de física e matemática especialista no Ensino Médio brasileiro (diretrizes BNCC).
-        Gere um plano e material de estudo didático focado no tema "{dados.tema}" para um aluno do {dados.ano} ano do Ensino Médio.
-        
-        O FOCO DO ALUNO É: {dados.objetivo}.
-        O TEMPO DISPONÍVEL DO ALUNO É: {dados.tempo}. Adapte a profundidade, o cronograma e as dicas com base estritamente neste período.
-        REGRAS CRÍTICAS DE FORMATAÇÃO (LATEX):
-        1. Use LaTeX para TODA variável, número, unidade ou fórmula.
-        2. Fórmulas Inline: Use $...$. OBRIGATÓRIO: Sempre coloque um espaço antes do primeiro cifrão e depois do último cifrão. NUNCA grude nas palavras (Errado: MAtriz$A$que. Correto: MAtriz $A$ que).
-        3. Fórmulas em Bloco: Use $$...$$. OBRIGATÓRIO: O bloco $$ deve estar em uma linha própria, com uma linha em branco acima e uma abaixo.
-        4. Matrizes e Sistemas: USE OBRIGATORIAMENTE blocos $$...$$. Para pular linhas em matrizes, use `\\\\` (quatro barras no texto) para garantir que o KaTeX receba `\\`. Exemplo: `\begin{{bmatrix}} 1 & 2 \\\\ 3 & 4 \end{{bmatrix}}`.
-        5. PROIBIDO caracteres Unicode (Δ, π, Σ, etc). Use \Delta, \pi, \sum.
-        6. Unidades de medida: Use \text{{...}} dentro do LaTeX. Ex: $10 \, \text{{m/s}}^2$.
-        7. NUNCA use barras invertidas para escapar cifrões (use $, nunca \$).
-        8. Para frações, use sempre \frac{{a}}{{b}}.
-        
-        Você DEVE construir a resposta em formato Markdown incluindo APENAS as seções que foram solicitadas abaixo:
-        """
+        # ══════════════════════════════════════════════
+        # PARTE 1 — REGRAS GLOBAIS
+        # ══════════════════════════════════════════════
+        prompt = f"""Você é um tutor especialista em Física e Matemática para o Ensino Médio brasileiro (BNCC).
+Gere material de estudo sobre "{dados.tema}" para um aluno do {dados.ano} ano.
+OBJETIVO: {dados.objetivo} | TEMPO: {dados.tempo}
 
-        # 2. SEÇÕES OPCIONAIS: Adicionadas conforme os checkboxes
+REGRAS DE LATEX — OBRIGATÓRIAS EM TODO O TEXTO MARKDOWN:
+- Inline: escreva $ expressão $ com espaço antes e depois do cifrão. Exemplo: "O módulo $ |\\vec{{v}}| $ é..."
+- Bloco: escreva $$ expressão $$ em linha própria com linha vazia acima e abaixo.
+- NUNCA use \\( \\) nem \\[ \\] — SOMENTE $ e $$.
+- NUNCA escreva \\$ para escapar cifrão.
+- NUNCA use caracteres Unicode matemáticos: use \\Delta, \\pi, \\Sigma, \\alpha, \\beta, \\approx, \\times.
+- Frações: \\frac{{a}}{{b}}
+- Unidades: $ 9{{,}}8\\,\\text{{m/s}}^2 $
+- Vetores: \\vec{{v}}
+
+"""
+
+        # ══════════════════════════════════════════════
+        # PARTE 2 — BLOCO JSON (sempre gerado primeiro)
+        # ══════════════════════════════════════════════
+        if dados.mapa:
+            prompt += f"""## ⚠️ GERE ESTE BLOCO JSON ANTES DE QUALQUER TEXTO
+
+Retorne um bloco ```json com EXATAMENTE esta estrutura (substitua pelos dados reais de "{dados.tema}"):
+
+```json
+{{
+  "mapa_cronograma": {{
+    "nodes": [
+      {{"id": "n0", "type": "default", "data": {{"label": "🎯 Início\\n{dados.tema}"}}, "position": {{"x": 300, "y": 0}}}},
+      {{"id": "n1", "type": "default", "data": {{"label": "📖 Dia 1\\nDescreva o tópico do dia 1"}}, "position": {{"x": 80, "y": 160}}}},
+      {{"id": "n2", "type": "default", "data": {{"label": "📝 Dia 2\\nDescreva o tópico do dia 2"}}, "position": {{"x": 300, "y": 160}}}},
+      {{"id": "n3", "type": "default", "data": {{"label": "🧪 Dia 3\\nDescreva o tópico do dia 3"}}, "position": {{"x": 520, "y": 160}}}},
+      {{"id": "nf", "type": "default", "data": {{"label": "✅ Revisão Final\\n+ {dados.objetivo}"}}, "position": {{"x": 300, "y": 320}}}}
+    ],
+    "edges": [
+      {{"id": "e1", "source": "n0", "target": "n1", "animated": true}},
+      {{"id": "e2", "source": "n0", "target": "n2", "animated": true}},
+      {{"id": "e3", "source": "n0", "target": "n3", "animated": true}},
+      {{"id": "e4", "source": "n1", "target": "nf", "animated": true}},
+      {{"id": "e5", "source": "n2", "target": "nf", "animated": true}},
+      {{"id": "e6", "source": "n3", "target": "nf", "animated": true}}
+    ]
+  }},
+  "infografico": [
+    {{
+      "titulo": "1. Definição",
+      "cor": "blue",
+      "conteudo": [
+        {{"tipo": "texto", "valor": "Escreva aqui a definição principal de {dados.tema}"}},
+        {{"tipo": "latex", "valor": "fórmula_principal_sem_cifrão"}}
+      ]
+    }},
+    {{
+      "titulo": "2. Fórmulas",
+      "cor": "red",
+      "conteudo": [
+        {{"tipo": "latex", "valor": "primeira_fórmula_sem_cifrão"}},
+        {{"tipo": "texto", "valor": "Explique o que significa cada letra"}},
+        {{"tipo": "latex", "valor": "segunda_fórmula_sem_cifrão"}}
+      ]
+    }},
+    {{
+      "titulo": "3. Tipos / Classificação",
+      "cor": "green",
+      "conteudo": [
+        {{"tipo": "texto", "valor": "Tipo ou caso 1"}},
+        {{"tipo": "texto", "valor": "Tipo ou caso 2"}},
+        {{"tipo": "texto", "valor": "Tipo ou caso 3"}}
+      ]
+    }},
+    {{
+      "titulo": "4. Propriedades",
+      "cor": "purple",
+      "conteudo": [
+        {{"tipo": "texto", "valor": "Propriedade importante 1"}},
+        {{"tipo": "latex", "valor": "expressão_relacionada_sem_cifrão"}},
+        {{"tipo": "texto", "valor": "Propriedade importante 2"}}
+      ]
+    }},
+    {{
+      "titulo": "5. Dicas para a Prova",
+      "cor": "orange",
+      "conteudo": [
+        {{"tipo": "texto", "valor": "Dica 1 — o que mais cai na prova"}},
+        {{"tipo": "texto", "valor": "Dica 2 — erro comum a evitar"}},
+        {{"tipo": "texto", "valor": "Dica 3 — como verificar a resposta"}}
+      ]
+    }}
+  ]
+}}
+```
+
+REGRAS DO JSON:
+- Substitua TODOS os textos de exemplo pelos dados reais de "{dados.tema}"
+- Campo "latex": LaTeX PURO sem $ delimitadores. Correto: "F = G \\frac{{m_1 m_2}}{{d^2}}"
+- Use \\\\ (4 barras no Python = 2 barras no JSON) para quebrar linha em matrizes
+- Adapte o número de nodes ao tempo de {dados.tempo} (um node por dia/semana)
+- JSON deve ser válido: sem vírgulas extras, sem comentários
+
+"""
+        else:
+            # Mesmo sem mapa, gera o infográfico
+            prompt += f"""## ⚠️ GERE ESTE BLOCO JSON ANTES DE QUALQUER TEXTO
+
+```json
+{{
+  "infografico": [
+    {{"titulo": "1. Definição", "cor": "blue", "conteudo": [{{"tipo": "texto", "valor": "def de {dados.tema}"}}, {{"tipo": "latex", "valor": "fórmula_sem_cifrão"}}]}},
+    {{"titulo": "2. Fórmulas", "cor": "red", "conteudo": [{{"tipo": "latex", "valor": "fórmula1"}}, {{"tipo": "latex", "valor": "fórmula2"}}]}},
+    {{"titulo": "3. Tipos", "cor": "green", "conteudo": [{{"tipo": "texto", "valor": "tipo 1"}}, {{"tipo": "texto", "valor": "tipo 2"}}]}},
+    {{"titulo": "4. Propriedades", "cor": "purple", "conteudo": [{{"tipo": "texto", "valor": "propriedade 1"}}, {{"tipo": "latex", "valor": "expressão"}}]}},
+    {{"titulo": "5. Dicas Prova", "cor": "orange", "conteudo": [{{"tipo": "texto", "valor": "dica 1"}}, {{"tipo": "texto", "valor": "dica 2"}}]}}
+  ]
+}}
+```
+Substitua todos os valores de exemplo pelos dados reais de "{dados.tema}". Campo "latex" = LaTeX puro sem $.
+
+"""
+
+        # ══════════════════════════════════════════════
+        # PARTE 3 — SEÇÕES MARKDOWN
+        # ══════════════════════════════════════════════
         if dados.resumo:
-            prompt_instrucoes += f"""
-            # 📘 Resumo Didático: {dados.tema}
-            [Crie um resumo teórico bem estruturado sobre o assunto, adaptado para quem vai fazer um(a) {dados.objetivo} com cronograma de estudo para {dados.tempo}]
-            """
+            prompt += f"""## 📘 Resumo Didático: {dados.tema}
+
+Estruture em ### Dia 1, ### Dia 2, etc. conforme {dados.tempo}.
+Use $ fórmula $ para inline e $$ fórmula $$ para blocos.
+Adapte para {dados.objetivo}.
+
+"""
 
         if dados.explicacao:
-            prompt_instrucoes += """
-            # 💡 Explicação Simplificada
-            [Explique o conceito de forma extremamente fácil e amigável, usando analogias simples]
-            """
+            prompt += f"""## 💡 Explicação Simplificada
+
+Explique "{dados.tema}" com analogias do dia a dia. Linguagem simples e motivadora.
+
+"""
 
         if dados.cotidiano:
-            prompt_instrucoes += """
-            # 🏠 Exemplos do Cotidiano
-            [Mostre onde e como esse conceito físico ou matemático aparece do dia a dia dos alunos fora da escola]
-            """
+            prompt += f"""## 🏠 Exemplos do Cotidiano
+
+Liste 4 exemplos reais de "{dados.tema}" no dia a dia dos alunos.
+
+"""
 
         if dados.tecnologia:
-            prompt_instrucoes += f"""
-            # 🚀 Conexão com a Tecnologia (BNCC)
-            [Explique detalhadamente como o conceito de {dados.tema} é aplicado no desenvolvimento de novas tecnologias do mundo real, como inteligência artificial, smartphones, games ou engenharia]
-            """
+            prompt += f"""## 🚀 Conexão com a Tecnologia (BNCC)
 
-        if dados.mapa:
-            prompt_instrucoes += f"""
-            # 🗺️ Mapas Mentais para React Flow (JSON)
-            Gere OBRIGATORIAMENTE a estrutura de dados para o React Flow. 
-            O conteúdo deve conter chaves estruturadas em formato JSON válido, contidas estritamente dentro de um único bloco de código marcado com ```json.
-            
-            O formato deve conter duas chaves principais: "mapa_cronograma" e "mapa_conteudo".
-            
-            Exemplo de estrutura JSON exata esperada:
-            ```json
-            {{
-              "mapa_cronograma": {{
-                "nodes": [
-                  {{ "id": "c1", "data": {{ "label": "Cronograma {dados.tempo}" }}, "position": {{ "x": 250, "y": 0 }}, "type": "input" }},
-                  {{ "id": "c2", "data": {{ "label": "Fase Inicial" }}, "position": {{ "x": 250, "y": 100 }} }}
-                ],
-                "edges": [
-                  {{ "id": "ec1-2", "source": "c1", "target": "c2", "animated": true }}
-                ]
-              }},
-              "mapa_conteudo": {{
-                "nodes": [
-                  {{ "id": "n1", "data": {{ "label": "{dados.tema}" }}, "position": {{ "x": 400, "y": 0 }}, "type": "input" }},
-                  {{ "id": "n2", "data": {{ "label": "Conceitos Fundamentais" }}, "position": {{ "x": 200, "y": 120 }} }},
-                  {{ "id": "n3", "data": {{ "label": "Aplicacoes Tecnologicas" }}, "position": {{ "x": 600, "y": 120 }} }}
-                ],
-                "edges": [
-                  {{ "id": "en1-2", "source": "n1", "target": "n2" }},
-                  {{ "id": "en1-3", "source": "n1", "target": "n3" }}
-                ]
-              }}
-            }}
-            ```
+Como "{dados.tema}" é aplicado em IA, games, smartphones, robótica ou engenharia?
 
-            Especificações Cruciais:
-            1. No "mapa_cronograma", organize os nós sequencialmente simulando as fases de estudo ao longo de {dados.tempo} para o objetivo {dados.objetivo}.
-            2. No "mapa_conteudo", crie uma árvore SINTÉTICA (MÁXIMO ABSOLUTO DE 15 NÓS). Agrupe conceitos para garantir que o JSON NUNCA seja cortado por limite de tamanho. Detalhe os conceitos matemáticos em LaTeX e usabilidade em tecnologia.
-            3. Distribua os valores de 'x' e 'y' de maneira lógica para que os nós não fiquem sobrepostos (aumente o 'y' a cada nível que descer na árvore).
-            4. NUNCA adicione textos ou comentários fora do bloco de código ```json. Não utilize aspas duplas dentro das strings das labels.
-            """
+"""
 
         if dados.exercicios:
-            prompt_instrucoes += """
-            # ✏️ Exercícios de Fixação
-            [Apresente exercícios práticos compatíveis com o objetivo do aluno, incluindo a resolução passo a passo comentada]
-            """
+            prompt += f"""## ✏️ Exercícios de Fixação
 
-        # 3. ENVIO: Chama a função que testa os modelos em fila
-        texto_gerado = gerar_conteudo_com_fallback(prompt_instrucoes)
+Crie 4 exercícios sobre "{dados.tema}" com resolução passo a passo.
+Use $$ fórmula $$ para cada equação da resolução.
+Adapte ao nível do {dados.ano} ano e ao objetivo: {dados.objetivo}.
 
+"""
+
+        # ══════════════════════════════════════════════
+        # PARTE 4 — VÍDEO (sempre incluído)
+        # ══════════════════════════════════════════════
+        prompt += f"""## 📺 Vídeo Recomendado
+
+Indique UM vídeo do YouTube em português sobre "{dados.tema}" para Ensino Médio.
+Canais preferidos: Ferretto Matemática, Me Salva!, Descomplica, Física e Afins, Professor Noslen, Equaciona Com Paulo Pereira.
+
+Formato obrigatório:
+**Canal:** [Nome do Canal](https://www.youtube.com/URL_REAL)
+**Por que assistir:** Uma frase sobre o diferencial do vídeo.
+"""
+
+        texto_gerado = gerar_conteudo_com_fallback(prompt)
         return {"conteudo": texto_gerado}
 
     except Exception as e:
-        print(f"❌ ERRO INTERNO NO BACKEND: {str(e)}")
+        print(f"❌ ERRO: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

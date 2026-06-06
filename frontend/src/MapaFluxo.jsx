@@ -52,7 +52,7 @@ export default function MapaFluxo({ dados }) {
     <div
       style={{
         width: "100%",
-        height: "500px",
+        height: "clamp(300px, 50vw, 500px)",
         border: "1px solid #e5e7eb",
         borderRadius: "12px",
         backgroundColor: "#f9fafb",

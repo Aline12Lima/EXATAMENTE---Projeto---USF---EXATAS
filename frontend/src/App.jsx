@@ -2,23 +2,79 @@ import { useState, useRef } from "react";
 import markedKatex from "marked-katex-extension";
 import { marked } from "marked";
 import MapaFluxo from "./MapaFluxo";
+import CheatSheetGrid from "./CheatSheetGrid";
 import "katex/dist/katex.min.css";
+import logo from "../public/logo.png";
 
-marked.use(markedKatex({ throwOnError: false }));
+// Configura marked com suporte a KaTeX
+// nonStandard: true aceita $...$ e $$...$$
+marked.use(
+  markedKatex({
+    throwOnError: false,
+    nonStandard: true,
+    output: "html",
+  }),
+);
 
-const normalizarDadosReactFlow = (mapa) => {
+// ─── Corrige nodes que o Gemini às vezes manda como edges ───
+const normalizarReactFlow = (mapa) => {
   if (!mapa) return null;
-  let nodes = mapa.nodes || [];
-  let edges = mapa.edges || [];
+  const todos = mapa.nodes || [];
+  const nosReais = todos.filter((n) => !n.source && !n.target);
+  const setasPerdidas = todos.filter((n) => n.source && n.target);
+  const edges = [...(mapa.edges || []), ...setasPerdidas];
+  return { nodes: nosReais, edges };
+};
 
-  // Separa o que é caixa de verdade e o que é seta perdida no array errado
-  const nosReais = nodes.filter((n) => !n.source && !n.target);
-  const setasPerdidas = nodes.filter((n) => n.source && n.target);
+// ─── Extrai o bloco ```json do texto bruto da IA ───
+const extrairJson = (texto) => {
+  // Tenta com bloco markdown
+  const regexBloco = /```json\s*([\s\S]*?)\s*```/;
+  const matchBloco = texto.match(regexBloco);
+  if (matchBloco?.[1]) {
+    try {
+      return {
+        obj: JSON.parse(matchBloco[1].trim()),
+        textoSemJson: texto.replace(regexBloco, ""),
+      };
+    } catch {
+      // fallthrough para tentativa de reparação
+    }
+  }
 
-  return {
-    nodes: nosReais,
-    edges: [...edges, ...setasPerdidas],
-  };
+  // Fallback: tenta achar objeto JSON diretamente no texto
+  const regexObjeto = /\{[\s\S]*"(?:mapa_cronograma|infografico)"[\s\S]*\}/;
+  const matchObjeto = texto.match(regexObjeto);
+  if (matchObjeto?.[0]) {
+    try {
+      return {
+        obj: JSON.parse(matchObjeto[0].trim()),
+        textoSemJson: texto.replace(matchObjeto[0], ""),
+      };
+    } catch {
+      console.warn(
+        "⚠️ JSON encontrado mas inválido:",
+        matchObjeto[0].slice(0, 200),
+      );
+    }
+  }
+
+  return { obj: null, textoSemJson: texto };
+};
+
+// ─── Limpa escapes que a IA manda errado SEM quebrar o LaTeX ───
+// IMPORTANTE: não remove espaços em torno de $ pois o marked-katex precisa deles
+const limparLatex = (texto) => {
+  return (
+    texto
+      // Converte delimitadores alternativos para o padrão $
+      .replace(/\\\[/g, "\n\n$$\n\n")
+      .replace(/\\\]/g, "\n\n$$\n\n")
+      .replace(/\\\(/g, " $")
+      .replace(/\\\)/g, "$ ")
+      // Remove escapes de cifrão: \$ → $
+      .replace(/\\\$/g, "$")
+  );
 };
 
 export default function App() {
@@ -28,7 +84,6 @@ export default function App() {
   const [tempoQtd, setTempoQtd] = useState("");
   const [tempoTipo, setTempoTipo] = useState("Dias");
 
-  // Estados dos Checkboxes exatamente como as IDs do HTML original
   const [recursos, setRecursos] = useState({
     mapa: false,
     resumo: false,
@@ -42,47 +97,39 @@ export default function App() {
   const [errorModal, setErrorModal] = useState(false);
   const [resultadoHtml, setResultadoHtml] = useState("");
   const [dadosCronograma, setDadosCronograma] = useState(null);
-  const [dadosConteudo, setDadosConteudo] = useState(null);
+  const [dadosInfografico, setDadosInfografico] = useState(null);
 
   const textareaRef = useRef(null);
 
-  const handleCheckboxChange = (key) => {
+  const handleCheckboxChange = (key) =>
     setRecursos((prev) => ({ ...prev, [key]: !prev[key] }));
-  };
 
   const marcarTodos = () => {
-    const checkboxes = Object.values(recursos);
-    const todosMarcados = checkboxes.every((val) => val);
-    const novoEstado = {};
-    Object.keys(recursos).forEach((key) => {
-      novoEstado[key] = !todosMarcados;
+    const todos = Object.values(recursos).every(Boolean);
+    const novo = {};
+    Object.keys(recursos).forEach((k) => {
+      novo[k] = !todos;
     });
-    setRecursos(novoEstado);
+    setRecursos(novo);
   };
 
   const autoExpand = (e) => {
-    const campo = e.target;
-    campo.style.height = "inherit";
-    campo.style.height = `${campo.scrollHeight}px`;
+    e.target.style.height = "inherit";
+    e.target.style.height = `${e.target.scrollHeight}px`;
   };
 
   const enviarFormulario = async (e) => {
-    if (e) {
-      e.preventDefault();
-    }
+    if (e) e.preventDefault();
 
-    if (!Object.values(recursos).some((val) => val)) {
-      console.warn();
-      alert(
-        "Por favor, selecione pelo menos um recurso para incluir no seu material de estudo!",
-      );
+    if (!Object.values(recursos).some(Boolean)) {
+      alert("Selecione pelo menos um recurso!");
       return;
     }
 
     setLoading(true);
     setResultadoHtml("");
     setDadosCronograma(null);
-    setDadosConteudo(null);
+    setDadosInfografico(null);
 
     try {
       const apiUrl = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
@@ -98,109 +145,67 @@ export default function App() {
         }),
       });
 
-      if (!response.ok) {
-        console.error(
-          "❌ [DEBUG ERRO] O backend retornou erro:",
-          response.status,
-        );
-        throw new Error(`Erro HTTP: ${response.status}`);
-      }
+      if (!response.ok) throw new Error(`Erro HTTP: ${response.status}`);
 
       const dados = await response.json();
-
       let textoBruto = dados.conteudo;
-      let jsonExtraido = null;
 
-      // 1. Tenta pegar do bloco markdown padrão
-      const regexJson = /```(?:json)?\s*(\{[\s\S]*?\})\s*```/;
-      const match = textoBruto.match(regexJson);
+      // 1. Extrai o JSON
+      const { obj, textoSemJson } = extrairJson(textoBruto);
 
-      if (match && match[1]) {
-        jsonExtraido = match[1];
-        textoBruto = textoBruto.replace(regexJson, "");
-      } else {
-        // 2. FALLBACK SUPER ROBUSTO: Procura o objeto JSON diretamente no texto
-        const fallbackMatch = textoBruto.match(
-          /(\{[\s\S]*"mapa_cronograma"[\s\S]*\})/,
-        );
-        if (fallbackMatch && fallbackMatch[1]) {
-          jsonExtraido = fallbackMatch[1];
-          textoBruto = textoBruto.replace(fallbackMatch[1], "");
+      if (obj) {
+        if (obj.mapa_cronograma) {
+          const normalizado = normalizarReactFlow(obj.mapa_cronograma);
+          console.log(
+            "✅ Cronograma nodes:",
+            normalizado.nodes.length,
+            "edges:",
+            normalizado.edges.length,
+          );
+          setDadosCronograma(normalizado);
+        }
+        if (obj.infografico?.length) {
+          console.log("✅ Infográfico cards:", obj.infografico.length);
+          setDadosInfografico(obj.infografico);
         }
       }
 
-      if (jsonExtraido) {
-        try {
-          const jsonLimpo = jsonExtraido.trim();
-
-          const objetoMapas = JSON.parse(jsonLimpo);
-          if (objetoMapas.mapa_cronograma) {
-            setDadosCronograma(
-              normalizarDadosReactFlow(objetoMapas.mapa_cronograma),
-            );
-          }
-          if (objetoMapas.mapa_conteudo) {
-            setDadosConteudo(
-              normalizarDadosReactFlow(objetoMapas.mapa_conteudo),
-            );
-          }
-        } catch (err) {
-          console.error("❌ [DEBUG ERRO] Falha ao fazer o JSON.parse:", err);
-        }
-      }
-
-      console.log(
-        "📍 [DEBUG 12] Limpando escapes da IA e renderizando Matemática...",
-      );
-
-      // 🌟 ESTEIRA DE LIMPEZA: Força o texto a ficar no padrão exato do KaTeX
-      let textoLimpo = textoBruto
-        .replace(/\\{1,2}\$/g, "$") // Remove escapes de cifrão: \$ -> $
-        .replace(/\\{1,2}\[/g, "\n\n$$\n") // Converte \[ em bloco $$ com quebra de linha
-        .replace(/\\{1,2}\]/g, "\n$$\n\n") // Converte \] em bloco $$ com quebra de linha
-        .replace(/\\{1,2}\(/g, " $") // Converte \( em inline $
-        .replace(/\\{1,2}\)/g, "$ ") // Converte \) em inline $
-        .replace(/\n\s*\$\$\s*\n/g, "\n\n$$\n") // Garante que blocos $$ fiquem isolados
-        .replace(/([a-zA-ZÀ-ÿ0-9])\$/g, "$1 $") // Afasta a palavra colada no cifrão inicial (MAtriz$A -> MAtriz $A)
-        .replace(/\$([a-zA-ZÀ-ÿ0-9])/g, "$ $1") // Afasta a palavra colada no cifrão final ($Aque -> $A que)
-        .replace(/\\\s+(?=\d|&|-)/g, "\\\\ ") // Força a correção de matrizes quebradas enviadas com '\ ' em vez de '\\'
-        .replace(/\$\s+/g, "$") // Remove espaço após o $ inicial: $ x -> $x
-        .replace(/\s+\$/g, "$") // Remove espaço antes do $ final: x $ -> x$
-        .replace(/(\d+)\s+(m\/s|kg|m|s|N|J|W|Pa)/g, "$$1 \\, \\text{$2}$"); // Tenta capturar unidades perdidas
-
+      // 2. Limpa escapes e renderiza o Markdown+KaTeX
+      const textoLimpo = limparLatex(textoSemJson);
       setResultadoHtml(marked.parse(textoLimpo));
-    } catch (erroGeral) {
-      console.error(
-        "❌ [DEBUG ERRO] Exceção capturada no fluxo geral:",
-        erroGeral,
-      );
+    } catch (err) {
+      console.error("❌ Erro geral:", err);
       setErrorModal(true);
     } finally {
       setLoading(false);
     }
   };
+
   const imprimirPDF = () => {
-    const tituloOriginal = document.title;
-    const nomeArquivo = `ExataMente_${tema.trim().replace(/\s+/g, "_")}`;
-
-    document.title = nomeArquivo;
-
-    // 🌟 Dá 800ms para o KaTeX processar todas as frações antes do PDF
+    const original = document.title;
+    document.title = `ExataMente_${tema.trim().replace(/\s+/g, "_")}`;
     setTimeout(() => {
       window.print();
-      document.title = tituloOriginal;
+      document.title = original;
     }, 800);
   };
 
+  const temResultado = resultadoHtml || dadosCronograma || dadosInfografico;
+
   return (
     <div className="bg-gray-50 text-gray-800 font-sans min-h-screen">
-      {/* Modal de Erro igual ao HTML */}
+      <style>{`
+        @media print {
+          header, footer, form, .no-print { display: none !important; }
+          #resultado-container { box-shadow: none !important; border: none !important; }
+          .prose { font-size: 11px; }
+        }
+      `}</style>
+
+      {/* Modal de Erro */}
       {errorModal && (
-        <div
-          id="error-modal"
-          className="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center p-4 z-50 animate-fade-in"
-        >
-          <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl transform transition-all border border-gray-100">
+        <div className="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl border border-gray-100">
             <div className="flex items-center space-x-3 text-amber-500 mb-4">
               <svg
                 className="w-8 h-8"
@@ -220,13 +225,12 @@ export default function App() {
               </h3>
             </div>
             <p className="text-gray-600 leading-relaxed mb-6">
-              O servidor está processando muitas requisições no momento ou
-              encontrou uma oscilação temporária. Por favor, **aguarde um
-              instante** e tente gerar seu material novamente.
+              O servidor encontrou um problema temporário. Aguarde e tente
+              novamente.
             </p>
             <button
               onClick={() => setErrorModal(false)}
-              className="w-full bg-gray-800 hover:bg-gray-900 text-white font-medium py-2.5 rounded-xl transition shadow-md"
+              className="w-full bg-gray-800 hover:bg-gray-900 text-white font-medium py-2.5 rounded-xl transition"
             >
               Entendido
             </button>
@@ -234,45 +238,39 @@ export default function App() {
         </div>
       )}
 
-      {/* Header idêntico */}
-      <header className="bg-blue-600 text-white p-6 shadow-md">
-        <div className="container mx-auto">
-          <h1 className="text-3xl font-bold">
-            📐 Exata
-            <span className="text-yellow-200 drop-shadow-[0_0_10px_rgba(254,240,138,0.9)] transition-all duration-50">
-              Mente
-            </span>
-          </h1>
-          <p className="text-sm opacity-90 mt-1">
-            IA de Apoio em Matemática e Física (BNCC - ODS 4)
+      <header
+        className="bg-blue-600 text-white px-6 py-2 shadow-md no-print overflow-hidden"
+        style={{ height: "72px" }}
+      >
+        <div className="container mx-auto flex items-center gap-4 h-full">
+          <img
+            src={logo}
+            alt="Logo ExataMente"
+            className=" mt-12 h-48 w-auto"
+          />
+          <p className="text-sm mt-12 opacity-90">
+            Aprenda exatas sem medo e com entusiasmo 🚀
           </p>
         </div>
       </header>
 
-      {/* Main Container */}
       <main className="container mx-auto p-4 max-w-4xl mt-8">
-        {/* Seção Informativa: Como funciona */}
-        <section className="mb-8 bg-white p-6 rounded-xl shadow-sm border border-gray-200">
-          <h2 className="text-xl font-bold text-gray-800 mb-3 flex items-center gap-2">
+        {/* Como funciona */}
+        <section className="mb-8 bg-blue-100 p-4 sm:p-6 rounded-xl shadow-sm border border-gray-200 no-print">
+          <h2 className="text-xl font-bold text-gray-800 mb-3">
             🚀 Como funciona?
           </h2>
           <p className="text-gray-600 leading-relaxed">
-            O <strong>ExataMente</strong> utiliza inteligência artificial para
-            transformar seu jeito de aprender. Com esta ferramenta, você gera
-            materiais personalizados com{" "}
-            <strong>
-              mapas mentais interativos, resumos didáticos e exercícios práticos
-            </strong>
-            . Buscamos conteúdos de fontes seguras para garantir que você estude
-            exatamente o que precisa para seus testes e provas, de forma rápida
-            e eficiente.
+            O <strong>ExataMente</strong> usa IA para gerar materiais
+            personalizados com{" "}
+            <strong>mapas mentais e exercícios práticos </strong>.
           </p>
         </section>
 
+        {/* Formulário */}
         <form
           onSubmit={enviarFormulario}
-          id="formulario-estudos"
-          className="bg-white p-6 rounded-lg shadow-sm border border-gray-200"
+          className="bg-white p-6 rounded-lg shadow-sm border border-gray-200 no-print"
         >
           <h2 className="text-xl font-semibold mb-4 text-gray-700">
             O que você deseja estudar hoje?
@@ -284,7 +282,6 @@ export default function App() {
                 Seu Ano:
               </label>
               <select
-                id="ano"
                 value={ano}
                 onChange={(e) => setAno(e.target.value)}
                 required
@@ -303,7 +300,6 @@ export default function App() {
                 Objetivo do Estudo:
               </label>
               <select
-                id="objetivo"
                 value={objetivo}
                 onChange={(e) => setObjetivo(e.target.value)}
                 required
@@ -325,7 +321,6 @@ export default function App() {
               <div className="flex space-x-2">
                 <input
                   type="number"
-                  id="tempo-qtd"
                   min="1"
                   placeholder="Ex: 5"
                   value={tempoQtd}
@@ -334,7 +329,6 @@ export default function App() {
                   className="w-1/3 p-2 border rounded-md text-center outline-none"
                 />
                 <select
-                  id="tempo-tipo"
                   value={tempoTipo}
                   onChange={(e) => setTempoTipo(e.target.value)}
                   required
@@ -353,7 +347,6 @@ export default function App() {
               Conteúdo (Ex: Lei de Ohm, Função de 2º Grau):
             </label>
             <textarea
-              id="tema"
               ref={textareaRef}
               rows={2}
               value={tema}
@@ -362,20 +355,20 @@ export default function App() {
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
-                  enviarFormulario(e); // 🌟 Agora passamos o 'e' para o form!
+                  enviarFormulario(e);
                 }
               }}
               required
               minLength={3}
               placeholder="Digite o conteúdo aqui..."
-              className="w-full py-3 px-4 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none outline-none text-base transition-all bg-gray-50 focus:bg-white"
+              className="w-full py-3 px-4 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 resize-none outline-none text-base transition-all bg-gray-50 focus:bg-white"
             />
           </div>
 
-          {/* Grid de recursos idêntico ao HTML clássico */}
+          {/* Checkboxes */}
           <div className="mb-6 p-4 bg-gray-50 rounded-xl border border-gray-200">
             <div className="flex justify-between items-center mb-3">
-              <span className="block text-sm font-semibold text-gray-700">
+              <span className="text-sm font-semibold text-gray-700">
                 Escolha o que incluir no seu material:
               </span>
               <button
@@ -387,84 +380,34 @@ export default function App() {
               </button>
             </div>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-              <label className="flex items-center space-x-2 bg-white p-2.5 border rounded-lg cursor-pointer hover:bg-blue-50 select-none">
-                <input
-                  type="checkbox"
-                  id="chk-mapa"
-                  checked={recursos.mapa}
-                  onChange={() => handleCheckboxChange("mapa")}
-                  className="chk-recurso w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                />
-                <span className="text-sm text-gray-700 font-medium">
-                  🗺️ Mapas Mentais
-                </span>
-              </label>
-              <label className="flex items-center space-x-2 bg-white p-2.5 border rounded-lg cursor-pointer hover:bg-blue-50 select-none">
-                <input
-                  type="checkbox"
-                  id="chk-resumo"
-                  checked={recursos.resumo}
-                  onChange={() => handleCheckboxChange("resumo")}
-                  className="chk-recurso w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                />
-                <span className="text-sm text-gray-700 font-medium">
-                  📝 Resumos
-                </span>
-              </label>
-              <label className="flex items-center space-x-2 bg-white p-2.5 border rounded-lg cursor-pointer hover:bg-blue-50 select-none">
-                <input
-                  type="checkbox"
-                  id="chk-exercicios"
-                  checked={recursos.exercicios}
-                  onChange={() => handleCheckboxChange("exercicios")}
-                  className="chk-recurso w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                />
-                <span className="text-sm text-gray-700 font-medium">
-                  ✏️ Exercícios
-                </span>
-              </label>
-              <label className="flex items-center space-x-2 bg-white p-2.5 border rounded-lg cursor-pointer hover:bg-blue-50 select-none">
-                <input
-                  type="checkbox"
-                  id="chk-explicacao"
-                  checked={recursos.explicacao}
-                  onChange={() => handleCheckboxChange("explicacao")}
-                  className="chk-recurso w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                />
-                <span className="text-sm text-gray-700 font-medium">
-                  💡 Explicações Simplificadas
-                </span>
-              </label>
-              <label className="flex items-center space-x-2 bg-white p-2.5 border rounded-lg cursor-pointer hover:bg-blue-50 select-none">
-                <input
-                  type="checkbox"
-                  id="chk-cotidiano"
-                  checked={recursos.cotidiano}
-                  onChange={() => handleCheckboxChange("cotidiano")}
-                  className="chk-recurso w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                />
-                <span className="text-sm text-gray-700 font-medium">
-                  🏠 Examples do Cotidiano
-                </span>
-              </label>
-              <label className="flex items-center space-x-2 bg-white p-2.5 border rounded-lg cursor-pointer hover:bg-blue-50 select-none">
-                <input
-                  type="checkbox"
-                  id="chk-tecnologia"
-                  checked={recursos.tecnologia}
-                  onChange={() => handleCheckboxChange("tecnologia")}
-                  className="chk-recurso w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                />
-                <span className="text-sm text-gray-700 font-medium">
-                  🚀 Ex. Onde é usado ?
-                </span>
-              </label>
+              {[
+                { key: "mapa", label: "🗺️ Mapa de Cronograma" },
+                { key: "resumo", label: "📝 Resumos" },
+                { key: "exercicios", label: "✏️ Exercícios" },
+                { key: "explicacao", label: "💡 Explicações Simplificadas" },
+                { key: "cotidiano", label: "🏠 Exemplos do Cotidiano" },
+                { key: "tecnologia", label: "🚀 Onde é Usado?" },
+              ].map(({ key, label }) => (
+                <label
+                  key={key}
+                  className="flex items-center space-x-2 bg-white p-2.5 border rounded-lg cursor-pointer hover:bg-blue-50 select-none"
+                >
+                  <input
+                    type="checkbox"
+                    checked={recursos[key]}
+                    onChange={() => handleCheckboxChange(key)}
+                    className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                  />
+                  <span className="text-sm text-gray-700 font-medium">
+                    {label}
+                  </span>
+                </label>
+              ))}
             </div>
           </div>
 
           <button
             type="submit"
-            id="btn-gerar"
             disabled={loading}
             className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 rounded-md transition shadow disabled:opacity-50 disabled:cursor-not-allowed"
           >
@@ -474,80 +417,101 @@ export default function App() {
           </button>
         </form>
 
-        {/* Loading idêntico */}
+        {/* Loading */}
         {loading && (
-          <div id="loading" className="text-center my-8">
+          <div className="text-center my-8 no-print">
             <p className="text-blue-600 font-medium animate-pulse">
-              🤖 A Exatamente está gerando seu material de estudos... Aguarde.
+              🤖 A ExataMente está gerando seu material... Aguarde.
             </p>
           </div>
         )}
 
-        {/* Container de Resultados idêntico */}
-        {(resultadoHtml || dadosCronograma || dadosConteudo) && (
+        {/* Resultado */}
+        {temResultado && (
           <div
             id="resultado-container"
-            className="mt-8 bg-white p-8 rounded-lg shadow-sm border border-gray-200"
+            className="mt-8 bg-white p-4 sm:p-8 rounded-lg shadow-sm border border-gray-200"
           >
-            <div className="flex justify-between items-center mb-6 border-b pb-4">
+            {/* Barra superior */}
+            <div className="flex justify-between items-center mb-6 border-b pb-4 no-print">
               <span className="text-xs font-semibold bg-green-100 text-green-800 px-2.5 py-1 rounded">
-                Material Gerado com Sucesso
+                ✅ Material Gerado com Sucesso
               </span>
               <button
                 onClick={imprimirPDF}
-                className="bg-gray-800 hover:bg-gray-900 text-white text-sm py-2 px-4 rounded transition"
+                className="
+                flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 mb-6 border-b pb-4 no-print"
               >
                 📥 Salvar em PDF
               </button>
             </div>
 
-            {/* Injeção dos Mapas do React Flow preservando a hierarquia */}
-            {recursos.mapa && dadosCronograma && (
-              <div className="my-6">
-                <h3 className="text-lg font-bold text-gray-700 mb-2">
-                  🗓️ 1. Cronograma de Estudos Interativo
-                </h3>
-                <MapaFluxo dados={dadosCronograma} />
+            {/* ── MAPA DE CRONOGRAMA (ReactFlow) ── */}
+            {recursos.mapa &&
+              dadosCronograma &&
+              dadosCronograma.nodes?.length > 0 && (
+                <div className="my-6 no-print">
+                  <h3 className="text-lg font-bold text-gray-700 mb-3">
+                    🗓️ Cronograma de Estudos Interativo
+                  </h3>
+                  <MapaFluxo dados={dadosCronograma} />
+                </div>
+              )}
+
+            {/* Aviso se mapa foi pedido mas não gerado */}
+            {recursos.mapa && !dadosCronograma && !loading && (
+              <div className="my-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-yellow-800 text-sm no-print">
+                ⚠️ O mapa de cronograma não foi gerado nesta resposta. Tente
+                novamente.
               </div>
             )}
 
-            {recursos.mapa && dadosConteudo && (
+            {/* ── CHEAT SHEET / INFOGRÁFICO ── */}
+            {dadosInfografico?.length > 0 && (
               <div className="my-6">
-                <h3 className="text-lg font-bold text-gray-700 mb-2">
-                  🧠 2. Árvore de Conhecimento Dinâmica
+                <h3 className="text-lg font-bold text-gray-700 mb-3">
+                  📋 Resumo Visual — Cheat Sheet
                 </h3>
-                <MapaFluxo dados={dadosConteudo} />
+                <CheatSheetGrid dados={dadosInfografico} />
               </div>
             )}
 
-            <div
-              id="resultado"
-              className="prose max-w-none space-y-4"
-              dangerouslySetInnerHTML={{ __html: resultadoHtml }}
-            />
+            {/* ── CONTEÚDO MARKDOWN COM KATEX ── */}
+            {resultadoHtml && (
+              <div
+                id="resultado"
+                className="prose max-w-none mt-6"
+                dangerouslySetInnerHTML={{ __html: resultadoHtml }}
+              />
+            )}
           </div>
         )}
       </main>
-      <footer className="bg-gray-900 text-gray-400 py-8 mt-12 border-t border-gray-800">
-        <div className="container mx-auto px-4 text-center">
-          <p className="text-sm md:text-base font-medium text-gray-300 mb-2">
-            🌱 Ferramenta desenvolvida para o projeto de sustentabilidade (ODS
-            4) por alunas de Engenharia de Software da USF.
-          </p>
 
+      <footer className="bg-blue-600 text-gray-400 py-8 mt-12 border-t border-gray-800 no-print">
+        <div className="container mx-auto px-4 text-center">
+          <p className="text-sm font-medium text-gray-300 mb-1">
+            📐 Ferramenta desenvolvida para auxiliar alunos do Ensino Médio de
+            escolas públicas a estudar exatas sem medo e com entusiasmo.
+          </p>
+          <p className="text-xs text-gray-400 mt-1">
+            Projeto Universitário — ODS 4 (Educação de Qualidade) · BNCC
+            Ciências da Natureza e Matemática · Análise e Desenvolvimento de
+            Sistemas — USF
+          </p>
           <div className="flex flex-col md:flex-row justify-center items-center gap-2 md:gap-6 mt-4 text-sm">
             <a
               href="mailto:aline.seu.sobrenome@usf.edu.br"
-              className="hover:text-blue-400 transition-colors flex items-center gap-2"
+              className="hover:text-blue-400 transition-colors"
             >
-              ✉️ Aline: aline.seu.sobrenome@usf.edu.br
+              ✉️ Aline: aline.lima.souza@mail.usf.edu.br
             </a>
             <span className="hidden md:inline text-gray-600">|</span>
             <a
               href="mailto:email.da.sua.colega@usf.edu.br"
-              className="hover:text-blue-400 transition-colors flex items-center gap-2"
+              className="hover:text-blue-400 transition-colors"
             >
-              ✉️ Nome da Colega: email.da.colega@usf.edu.br
+              ✉️ Miryan: Miryan.moreira@mail.usf.edu.br
             </a>
           </div>
         </div>
