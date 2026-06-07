@@ -1,4 +1,5 @@
 import { useState, useRef } from "react";
+import html2canvas from "html2canvas";
 import markedKatex from "marked-katex-extension";
 import { marked } from "marked";
 import MapaFluxo from "./MapaFluxo";
@@ -7,7 +8,6 @@ import "katex/dist/katex.min.css";
 import logo from "../public/logo.png";
 
 // Configura marked com suporte a KaTeX
-// nonStandard: true aceita $...$ e $$...$$
 marked.use(
   markedKatex({
     throwOnError: false,
@@ -28,7 +28,6 @@ const normalizarReactFlow = (mapa) => {
 
 // ─── Extrai o bloco ```json do texto bruto da IA ───
 const extrairJson = (texto) => {
-  // Tenta com bloco markdown
   const regexBloco = /```json\s*([\s\S]*?)\s*```/;
   const matchBloco = texto.match(regexBloco);
   if (matchBloco?.[1]) {
@@ -38,11 +37,10 @@ const extrairJson = (texto) => {
         textoSemJson: texto.replace(regexBloco, ""),
       };
     } catch {
-      // fallthrough para tentativa de reparação
+      // fallthrough
     }
   }
 
-  // Fallback: tenta achar objeto JSON diretamente no texto
   const regexObjeto = /\{[\s\S]*"(?:mapa_cronograma|infografico)"[\s\S]*\}/;
   const matchObjeto = texto.match(regexObjeto);
   if (matchObjeto?.[0]) {
@@ -52,30 +50,38 @@ const extrairJson = (texto) => {
         textoSemJson: texto.replace(matchObjeto[0], ""),
       };
     } catch {
-      console.warn(
-        "⚠️ JSON encontrado mas inválido:",
-        matchObjeto[0].slice(0, 200),
-      );
+      console.warn("⚠️ JSON inválido:", matchObjeto[0].slice(0, 200));
     }
   }
 
   return { obj: null, textoSemJson: texto };
 };
 
-// ─── Limpa escapes que a IA manda errado SEM quebrar o LaTeX ───
-// IMPORTANTE: não remove espaços em torno de $ pois o marked-katex precisa deles
+// ─── Limpa escapes de LaTeX ───
 const limparLatex = (texto) => {
-  return (
-    texto
-      // Converte delimitadores alternativos para o padrão $
-      .replace(/\\\[/g, "\n\n$$\n\n")
-      .replace(/\\\]/g, "\n\n$$\n\n")
-      .replace(/\\\(/g, " $")
-      .replace(/\\\)/g, "$ ")
-      // Remove escapes de cifrão: \$ → $
-      .replace(/\\\$/g, "$")
-  );
+  return texto
+    .replace(/\\\[/g, "\n\n$$\n\n")
+    .replace(/\\\]/g, "\n\n$$\n\n")
+    .replace(/\\\(/g, " $")
+    .replace(/\\\)/g, "$ ")
+    .replace(/\\\$/g, "$");
 };
+
+// 🛡️ Detecção de bypass no frontend (camada adicional de proteção)
+const PADROES_BYPASS_FRONTEND = [
+  /esqueça\s+(suas\s+)?instru[çc][õo]es/i,
+  /ignore\s+(suas\s+)?instru[çc][õo]es/i,
+  /ignore\s+(all\s+)?previous/i,
+  /forget\s+(your\s+)?instructions/i,
+  /(dan|jailbreak|modo\s+deus|god\s+mode)/i,
+  /you\s+are\s+now\s+(dan|jailbroken|free)/i,
+  /act\s+as\s+if\s+you\s+have\s+no/i,
+  /system\s*prompt/i,
+  /mostre\s+(o\s+)?prompt/i,
+];
+
+const detectarBypassFrontend = (texto) =>
+  PADROES_BYPASS_FRONTEND.some((p) => p.test(texto));
 
 export default function App() {
   const [tema, setTema] = useState("");
@@ -83,6 +89,7 @@ export default function App() {
   const [objetivo, setObjetivo] = useState("");
   const [tempoQtd, setTempoQtd] = useState("");
   const [tempoTipo, setTempoTipo] = useState("Dias");
+  const [avisoBypass, setAvisoBypass] = useState(false);
 
   const [recursos, setRecursos] = useState({
     mapa: false,
@@ -95,11 +102,13 @@ export default function App() {
 
   const [loading, setLoading] = useState(false);
   const [errorModal, setErrorModal] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
   const [resultadoHtml, setResultadoHtml] = useState("");
   const [dadosCronograma, setDadosCronograma] = useState(null);
   const [dadosInfografico, setDadosInfografico] = useState(null);
 
   const textareaRef = useRef(null);
+  const mapaRef = useRef(null);
 
   const handleCheckboxChange = (key) =>
     setRecursos((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -118,8 +127,24 @@ export default function App() {
     e.target.style.height = `${e.target.scrollHeight}px`;
   };
 
+  const handleTemaChange = (e) => {
+    const valor = e.target.value;
+    if (detectarBypassFrontend(valor)) {
+      setAvisoBypass(true);
+      return; // não atualiza o campo
+    }
+    setAvisoBypass(false);
+    setTema(valor);
+    autoExpand(e);
+  };
+
   const enviarFormulario = async (e) => {
     if (e) e.preventDefault();
+
+    if (detectarBypassFrontend(tema)) {
+      setAvisoBypass(true);
+      return;
+    }
 
     if (!Object.values(recursos).some(Boolean)) {
       alert("Selecione pelo menos um recurso!");
@@ -130,6 +155,7 @@ export default function App() {
     setResultadoHtml("");
     setDadosCronograma(null);
     setDadosInfografico(null);
+    setAvisoBypass(false);
 
     try {
       const apiUrl = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
@@ -140,17 +166,20 @@ export default function App() {
           tema: tema.trim(),
           ano,
           objetivo,
-          tempo: `${tempoQtd} ${tempoTipo}`,
+          tempo_qtd: tempoQtd,
+          tempo_tipo: tempoTipo,
           ...recursos,
         }),
       });
 
-      if (!response.ok) throw new Error(`Erro HTTP: ${response.status}`);
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.detail || `Erro HTTP: ${response.status}`);
+      }
 
       const dados = await response.json();
       let textoBruto = dados.conteudo;
 
-      // 1. Extrai o JSON
       const { obj, textoSemJson } = extrairJson(textoBruto);
 
       if (obj) {
@@ -170,20 +199,63 @@ export default function App() {
         }
       }
 
-      // 2. Limpa escapes e renderiza o Markdown+KaTeX
       const textoLimpo = limparLatex(textoSemJson);
       setResultadoHtml(marked.parse(textoLimpo));
     } catch (err) {
       console.error("❌ Erro geral:", err);
+      setErrorMsg(err.message || "Erro desconhecido.");
       setErrorModal(true);
     } finally {
       setLoading(false);
     }
   };
-
-  const imprimirPDF = () => {
+  const imprimirPDF = async () => {
     const original = document.title;
     document.title = `ExataMente_${tema.trim().replace(/\s+/g, "_")}`;
+
+    let imgContainer = null;
+
+    if (mapaRef.current) {
+      try {
+        const canvas = await html2canvas(mapaRef.current, {
+          backgroundColor: "#f9fafb",
+          scale: 1.5,
+          useCORS: true,
+          logging: false,
+        });
+        const dataUrl = canvas.toDataURL("image/png");
+
+        // Cria a imagem temporária
+        const imgEl = document.createElement("img");
+        imgEl.src = dataUrl;
+        imgEl.style.cssText =
+          "width:100%;border-radius:12px;border:1px solid #e5e7eb;margin-bottom:16px;display:block;";
+        imgEl.className = "mapa-print-img";
+
+        imgContainer = document.createElement("div");
+        imgContainer.appendChild(imgEl);
+        imgContainer.style.cssText =
+          "page-break-inside:avoid;margin-bottom:16px;";
+
+        const container = document.getElementById("resultado-container");
+        if (container) {
+          container.insertBefore(imgContainer, container.firstChild);
+        }
+
+        // CORREÇÃO CRUCIAL: Só imprime QUANDO a imagem terminou de carregar 100% no DOM
+        imgEl.onload = () => {
+          window.print();
+          document.title = original;
+          if (imgContainer) imgContainer.remove();
+        };
+
+        return; // Interrompe para não rodar o fallback abaixo
+      } catch (err) {
+        console.warn("⚠️ html2canvas falhou:", err);
+      }
+    }
+
+    // Fallback caso o mapa não exista ou o html2canvas dê erro catastrófico
     setTimeout(() => {
       window.print();
       document.title = original;
@@ -199,7 +271,16 @@ export default function App() {
           header, footer, form, .no-print { display: none !important; }
           #resultado-container { box-shadow: none !important; border: none !important; }
           .prose { font-size: 11px; }
+          /* Esconde o ReactFlow interativo — a imagem capturada aparece no lugar */
+          .react-flow__renderer,
+          .react-flow__controls,
+          .react-flow__background,
+          .react-flow__minimap { display: none !important; }
+          /* Mostra a URL dos links no PDF */
+          .prose a::after { content: " (" attr(href) ")"; font-size: 9px; color: #555; }
         }
+        .prose a { color: #2563eb; text-decoration: underline; }
+        .prose a:hover { color: #1d4ed8; }
       `}</style>
 
       {/* Modal de Erro */}
@@ -224,15 +305,50 @@ export default function App() {
                 Aviso do Sistema
               </h3>
             </div>
-            <p className="text-gray-600 leading-relaxed mb-6">
-              O servidor encontrou um problema temporário. Aguarde e tente
-              novamente.
+            <p className="text-gray-600 leading-relaxed mb-2">
+              O servidor encontrou um problema. Tente novamente.
             </p>
+            {errorMsg && (
+              <p className="text-lg text-red-600 bg-red-50 rounded p-2 mb-4">
+                {errorMsg}
+              </p>
+            )}
             <button
               onClick={() => setErrorModal(false)}
               className="w-full bg-gray-800 hover:bg-gray-900 text-white font-medium py-2.5 rounded-xl transition"
             >
               Entendido
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Bypass */}
+      {avisoBypass && (
+        <div className="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl border border-blue-100">
+            <div className="flex items-center space-x-3 text-blue-500 mb-4">
+              <span className="text-3xl">🛡️</span>
+              <h3 className="text-xl font-bold text-gray-800">
+                Ei, vamos aprender juntos!
+              </h3>
+            </div>
+            <p className="text-gray-600 leading-relaxed mb-4">
+              Estou aqui para te ajudar a <strong>entender</strong> Física e
+              Matemática passo a passo. Não consigo ignorar minhas regras
+              pedagógicas — elas existem para que você aprenda de verdade! 📐
+            </p>
+            <p className="text-gray-500 text-lg  mb-6">
+              Me conta qual conteúdo você quer estudar e vou te guiar com calma!
+            </p>
+            <button
+              onClick={() => {
+                setAvisoBypass(false);
+                setTema("");
+              }}
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 rounded-xl transition"
+            >
+              Tudo bem, vou estudar! 🚀
             </button>
           </div>
         </div>
@@ -246,9 +362,9 @@ export default function App() {
           <img
             src={logo}
             alt="Logo ExataMente"
-            className=" mt-12 h-48 w-auto"
+            className="mt-12  h-58 w-auto"
           />
-          <p className="text-sm mt-12 opacity-90">
+          <p className="text-lg mt-12 opacity-90">
             Aprenda exatas sem medo e com entusiasmo 🚀
           </p>
         </div>
@@ -260,10 +376,10 @@ export default function App() {
           <h2 className="text-xl font-bold text-gray-800 mb-3">
             🚀 Como funciona?
           </h2>
-          <p className="text-gray-600 leading-relaxed">
+          <p className="text-gray-600 text-lg  leading-relaxed">
             O <strong>ExataMente</strong> usa IA para gerar materiais
             personalizados com{" "}
-            <strong>mapas mentais e exercícios práticos </strong>.
+            <strong>mapas mentais e exercícios práticos</strong>.
           </p>
         </section>
 
@@ -278,7 +394,7 @@ export default function App() {
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
             <div>
-              <label className="block text-sm font-medium text-gray-600 mb-1">
+              <label className="block text-lg font-medium text-gray-600 mb-1">
                 Seu Ano:
               </label>
               <select
@@ -296,7 +412,7 @@ export default function App() {
               </select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-600 mb-1">
+              <label className="block text-lg font-medium text-gray-600 mb-1">
                 Objetivo do Estudo:
               </label>
               <select
@@ -315,7 +431,7 @@ export default function App() {
               </select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-600 mb-1">
+              <label className="block text-lg font-medium text-gray-600 mb-1">
                 Tempo Disponível:
               </label>
               <div className="flex space-x-2">
@@ -343,15 +459,14 @@ export default function App() {
           </div>
 
           <div className="mb-4">
-            <label className="block text-sm font-medium text-gray-600 mb-1">
+            <label className="block text-lg font-medium text-gray-600 mb-1">
               Conteúdo (Ex: Lei de Ohm, Função de 2º Grau):
             </label>
             <textarea
               ref={textareaRef}
               rows={2}
               value={tema}
-              onChange={(e) => setTema(e.target.value)}
-              onInput={autoExpand}
+              onChange={handleTemaChange}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
@@ -363,12 +478,18 @@ export default function App() {
               placeholder="Digite o conteúdo aqui..."
               className="w-full py-3 px-4 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 resize-none outline-none text-base transition-all bg-gray-50 focus:bg-white"
             />
+            {avisoBypass && (
+              <p className="text-lg text-red-600 mt-1">
+                🛡️ Entrada não permitida. Por favor, descreva um conteúdo de
+                Física ou Matemática.
+              </p>
+            )}
           </div>
 
           {/* Checkboxes */}
           <div className="mb-6 p-4 bg-gray-50 rounded-xl border border-gray-200">
             <div className="flex justify-between items-center mb-3">
-              <span className="text-sm font-semibold text-gray-700">
+              <span className="text-lg font-semibold text-gray-700">
                 Escolha o que incluir no seu material:
               </span>
               <button
@@ -398,7 +519,7 @@ export default function App() {
                     onChange={() => handleCheckboxChange(key)}
                     className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
                   />
-                  <span className="text-sm text-gray-700 font-medium">
+                  <span className="text-lg text-gray-700 font-medium">
                     {label}
                   </span>
                 </label>
@@ -408,7 +529,7 @@ export default function App() {
 
           <button
             type="submit"
-            disabled={loading}
+            disabled={loading || avisoBypass}
             className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 rounded-md transition shadow disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {loading
@@ -439,8 +560,7 @@ export default function App() {
               </span>
               <button
                 onClick={imprimirPDF}
-                className="
-                flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 mb-6 border-b pb-4 no-print"
+                className="text-lg font-medium text-blue-600 hover:text-blue-800 border border-blue-200 hover:bg-blue-50 px-4 py-1.5 rounded-lg transition"
               >
                 📥 Salvar em PDF
               </button>
@@ -450,17 +570,19 @@ export default function App() {
             {recursos.mapa &&
               dadosCronograma &&
               dadosCronograma.nodes?.length > 0 && (
-                <div className="my-6 no-print">
-                  <h3 className="text-lg font-bold text-gray-700 mb-3">
+                <div className="my-6">
+                  <h3 className="text-lg font-bold text-gray-700 mb-3 no-print">
                     🗓️ Cronograma de Estudos Interativo
                   </h3>
-                  <MapaFluxo dados={dadosCronograma} />
+                  {/* ref captura o ReactFlow para screenshot no PDF */}
+                  <div ref={mapaRef}>
+                    <MapaFluxo dados={dadosCronograma} />
+                  </div>
                 </div>
               )}
 
-            {/* Aviso se mapa foi pedido mas não gerado */}
             {recursos.mapa && !dadosCronograma && !loading && (
-              <div className="my-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-yellow-800 text-sm no-print">
+              <div className="my-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-yellow-800 text-lg no-print">
                 ⚠️ O mapa de cronograma não foi gerado nesta resposta. Tente
                 novamente.
               </div>
@@ -482,6 +604,15 @@ export default function App() {
                 id="resultado"
                 className="prose max-w-none mt-6"
                 dangerouslySetInnerHTML={{ __html: resultadoHtml }}
+                ref={(el) => {
+                  // Garante que todos os links do markdown abrem em nova aba
+                  if (el) {
+                    el.querySelectorAll("a").forEach((a) => {
+                      a.target = "_blank";
+                      a.rel = "noopener noreferrer";
+                    });
+                  }
+                }}
               />
             )}
           </div>
@@ -490,7 +621,7 @@ export default function App() {
 
       <footer className="bg-blue-600 text-gray-400 py-8 mt-12 border-t border-gray-800 no-print">
         <div className="container mx-auto px-4 text-center">
-          <p className="text-sm font-medium text-gray-300 mb-1">
+          <p className="text-lg font-medium text-gray-300 mb-1">
             📐 Ferramenta desenvolvida para auxiliar alunos do Ensino Médio de
             escolas públicas a estudar exatas sem medo e com entusiasmo.
           </p>
@@ -501,14 +632,14 @@ export default function App() {
           </p>
           <div className="flex flex-col md:flex-row justify-center items-center gap-2 md:gap-6 mt-4 text-sm">
             <a
-              href="mailto:aline.seu.sobrenome@usf.edu.br"
+              href="mailto:aline.lima.souza@mail.usf.edu.br"
               className="hover:text-blue-400 transition-colors"
             >
               ✉️ Aline: aline.lima.souza@mail.usf.edu.br
             </a>
             <span className="hidden md:inline text-gray-600">|</span>
             <a
-              href="mailto:email.da.sua.colega@usf.edu.br"
+              href="mailto:Miryan.moreira@mail.usf.edu.br"
               className="hover:text-blue-400 transition-colors"
             >
               ✉️ Miryan: Miryan.moreira@mail.usf.edu.br
