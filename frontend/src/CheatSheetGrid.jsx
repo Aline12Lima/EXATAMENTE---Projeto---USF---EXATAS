@@ -51,9 +51,10 @@ function ItemLatex({ valor }) {
         displayMode: true,
         output: "html",
         trust: false,
+        fleqn: false,
       });
     } catch {
-      ref.current.textContent = valor;
+      if (ref.current) ref.current.textContent = valor;
     }
   }, [valor]);
 
@@ -62,37 +63,40 @@ function ItemLatex({ valor }) {
       ref={ref}
       style={{
         textAlign: "center",
-        margin: "6px 0",
+        margin: "4px 0",
         overflowX: "auto",
-        fontSize: "0.85em",
-        padding: "2px 0",
+        overflowY: "hidden",
+        fontSize: "0.82em",
+        padding: "2px 4px",
+        maxWidth: "100%",
+        wordBreak: "keep-all",
       }}
     />
   );
 }
 
-function CheatCard({ secao, index }) {
-  const cor = CORES[secao.cor] ?? CORES.blue;
+function CheatCard({ card }) {
+  const cor = CORES[card.cor] ?? CORES.blue;
+  const largo = card.tamanho === "largo";
 
   return (
     <div
-      className="csq-card"
+      className={`csq-card${largo ? " csq-card-largo" : ""}`}
       style={{
         border: `2px solid ${cor.borda}`,
         borderRadius: "8px",
         overflow: "hidden",
-        boxShadow: "0 2px 6px rgba(0,0,0,0.10)",
+        boxShadow: "0 2px 8px rgba(0,0,0,0.10)",
         display: "flex",
         flexDirection: "column",
         breakInside: "avoid",
         pageBreakInside: "avoid",
       }}
     >
-      {/* Cabeçalho colorido */}
       <div
         style={{
           backgroundColor: cor.header,
-          padding: "8px 12px",
+          padding: "7px 12px",
           display: "flex",
           alignItems: "center",
           gap: "6px",
@@ -100,36 +104,18 @@ function CheatCard({ secao, index }) {
       >
         <span
           style={{
-            backgroundColor: "rgba(255,255,255,0.2)",
             color: cor.headerText,
-            fontSize: "11px",
-            fontWeight: 800,
-            width: "20px",
-            height: "20px",
-            borderRadius: "50%",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            flexShrink: 0,
-          }}
-        >
-          {index + 1}
-        </span>
-        <span
-          style={{
-            color: cor.headerText,
-            fontSize: "11px",
+            fontSize: "12px",
             fontWeight: 700,
-            letterSpacing: "0.05em",
+            letterSpacing: "0.04em",
             textTransform: "uppercase",
             lineHeight: 1.3,
           }}
         >
-          {secao.titulo.replace(/^\d+\.\s*/, "")}
+          {card.titulo}
         </span>
       </div>
 
-      {/* Conteúdo */}
       <div
         style={{
           backgroundColor: cor.fundo,
@@ -137,10 +123,10 @@ function CheatCard({ secao, index }) {
           flex: 1,
           display: "flex",
           flexDirection: "column",
-          gap: "5px",
+          gap: "4px",
         }}
       >
-        {(secao.conteudo ?? []).map((item, i) =>
+        {(card.itens ?? []).map((item, i) =>
           item.tipo === "latex" ? (
             <ItemLatex key={i} valor={item.valor} />
           ) : (
@@ -151,6 +137,7 @@ function CheatCard({ secao, index }) {
                 fontSize: "12px",
                 lineHeight: 1.55,
                 color: cor.texto,
+                wordBreak: "break-word",
               }}
             >
               {item.valor}
@@ -162,116 +149,188 @@ function CheatCard({ secao, index }) {
   );
 }
 
+function CardGrid({ cards }) {
+  if (!cards?.length) return null;
+  return (
+    <div className="csq-grid">
+      {cards.map((card, idx) => (
+        <CheatCard key={idx} card={card} />
+      ))}
+    </div>
+  );
+}
+
+function SectionLabel({ text }) {
+  return (
+    <div
+      style={{
+        fontSize: "13px",
+        fontWeight: 700,
+        color: "#1e293b",
+        letterSpacing: "0.05em",
+        textTransform: "uppercase",
+        borderBottom: "2px solid #cbd5e1",
+        paddingBottom: "6px",
+        marginBottom: "10px",
+        marginTop: "4px",
+      }}
+    >
+      {text}
+    </div>
+  );
+}
+
+function MainBanner({ titulo }) {
+  return (
+    <div
+      className="csq-titulo-banner"
+      style={{
+        background: "linear-gradient(135deg, #1e293b 0%, #0f172a 100%)",
+        borderRadius: "10px 10px 0 0",
+        padding: "14px 20px",
+      }}
+    >
+      <h2
+        style={{
+          color: "#f1f5f9",
+          fontSize: "16px",
+          fontWeight: 800,
+          margin: 0,
+          letterSpacing: "0.04em",
+          textTransform: "uppercase",
+        }}
+      >
+        {titulo || "📋 Resumo Visual — Cheat Sheet"}
+      </h2>
+      <p
+        style={{
+          color: "#94a3b8",
+          fontSize: "11px",
+          margin: "3px 0 0",
+          letterSpacing: "0.06em",
+          textTransform: "uppercase",
+        }}
+      >
+        Fórmulas · Conceitos · Exemplos · Exercícios
+      </p>
+    </div>
+  );
+}
+
 export default function CheatSheetGrid({ dados, titulo }) {
-  if (!dados?.length) return null;
+  const isNovoFormato =
+    dados &&
+    typeof dados === "object" &&
+    !Array.isArray(dados) &&
+    (dados.resumo_visual || dados.topicos || dados.exercicios_visuais);
+
+  const isLegado = Array.isArray(dados);
+
+  if (!isNovoFormato && !isLegado) return null;
+
+  const css = `
+    .csq-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      align-items: start;
+    }
+    .csq-card-largo {
+      grid-column: span 2;
+    }
+    @media (max-width: 900px) {
+      .csq-grid { grid-template-columns: repeat(2, 1fr); }
+      .csq-card-largo { grid-column: span 2; }
+    }
+    @media (max-width: 500px) {
+      .csq-grid { grid-template-columns: 1fr; }
+      .csq-card-largo { grid-column: span 1; }
+    }
+    @media print {
+      .csq-wrapper { page-break-inside: avoid; }
+      .csq-titulo-banner {
+        background: #1e293b !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+      .csq-grid {
+        display: grid !important;
+        grid-template-columns: repeat(4, 1fr) !important;
+        gap: 6px !important;
+        align-items: start !important;
+      }
+      .csq-card-largo { grid-column: span 2 !important; }
+      .csq-card { break-inside: avoid !important; page-break-inside: avoid !important; }
+      .csq-card > div:first-child {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+      }
+      .csq-card p { font-size: 10px !important; }
+    }
+  `;
+
+  if (isLegado) {
+    const cardsLegado = dados.map((s) => ({
+      titulo: s.titulo,
+      cor: s.cor,
+      tamanho: "normal",
+      itens: (s.conteudo ?? []).map((c) => ({ tipo: c.tipo, valor: c.valor })),
+    }));
+
+    return (
+      <div className="csq-wrapper">
+        <style>{css}</style>
+        <MainBanner titulo={titulo} />
+        <div
+          style={{
+            padding: "12px",
+            backgroundColor: "#f8fafc",
+            border: "2px solid #1e293b",
+            borderTop: "none",
+            borderRadius: "0 0 10px 10px",
+          }}
+        >
+          <CardGrid cards={cardsLegado} />
+        </div>
+      </div>
+    );
+  }
+
+  const { resumo_visual, topicos, exercicios_visuais } = dados;
 
   return (
     <div className="csq-wrapper">
-      <style>{`
-        @media print {
-          .csq-wrapper { page-break-inside: avoid; }
-          .csq-titulo-banner {
-            background: #1e293b !important;
-            -webkit-print-color-adjust: exact;
-            print-color-adjust: exact;
-          }
-          .csq-grid {
-            display: grid !important;
-            grid-template-columns: repeat(4, 1fr) !important;
-            gap: 6px !important;
-          }
-          .csq-card { break-inside: avoid !important; page-break-inside: avoid !important; }
-          .csq-card > div:first-child {
-            -webkit-print-color-adjust: exact !important;
-            print-color-adjust: exact !important;
-          }
-          .csq-card p { font-size: 10px !important; }
-        }
-        .csq-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-          gap: 12px;
-        }
-        @media (max-width: 640px) {
-          .csq-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
-        }
-        @media (min-width: 900px) {
-          .csq-grid { grid-template-columns: repeat(4, 1fr); }
-        }
-      `}</style>
-
-      {/* Banner de título */}
+      <style>{css}</style>
+      <MainBanner titulo={titulo} />
       <div
-        className="csq-titulo-banner"
         style={{
-          background: "linear-gradient(135deg, #1e293b 0%, #0f172a 100%)",
-          borderRadius: "10px 10px 0 0",
-          padding: "14px 20px",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          flexWrap: "wrap",
-          gap: "8px",
-        }}
-      >
-        <div>
-          <h2
-            style={{
-              color: "#f1f5f9",
-              fontSize: "18px",
-              fontWeight: 800,
-              margin: 0,
-              letterSpacing: "0.04em",
-              textTransform: "uppercase",
-            }}
-          >
-            {titulo || "📋 Resumo Visual — Cheat Sheet"}
-          </h2>
-          <p
-            style={{
-              color: "#94a3b8",
-              fontSize: "11px",
-              margin: "3px 0 0",
-              letterSpacing: "0.08em",
-              textTransform: "uppercase",
-            }}
-          >
-            Fórmulas essenciais · Conceitos · Exemplos
-          </p>
-        </div>
-        <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
-          {dados.slice(0, 4).map((s, i) => (
-            <span
-              key={i}
-              style={{
-                backgroundColor: "rgba(255,255,255,0.1)",
-                color: "#cbd5e1",
-                fontSize: "10px",
-                padding: "3px 8px",
-                borderRadius: "12px",
-                border: "1px solid rgba(255,255,255,0.15)",
-              }}
-            >
-              {s.titulo.replace(/^\d+\.\s*/, "")}
-            </span>
-          ))}
-        </div>
-      </div>
-
-      {/* Grid de cards */}
-      <div
-        className="csq-grid"
-        style={{
-          padding: "12px",
+          padding: "16px",
           backgroundColor: "#f8fafc",
           border: "2px solid #1e293b",
           borderTop: "none",
           borderRadius: "0 0 10px 10px",
         }}
       >
-        {dados.map((secao, idx) => (
-          <CheatCard key={idx} secao={secao} index={idx} />
+        {resumo_visual?.cards?.length > 0 && (
+          <>
+            <SectionLabel text="📋 Resumo Visual" />
+            <CardGrid cards={resumo_visual.cards} />
+          </>
+        )}
+
+        {topicos?.map((topico, ti) => (
+          <div key={ti} style={{ marginTop: "20px" }}>
+            <SectionLabel text={`📂 ${topico.titulo}`} />
+            <CardGrid cards={topico.cards} />
+          </div>
         ))}
+
+        {exercicios_visuais?.cards?.length > 0 && (
+          <div style={{ marginTop: "20px" }}>
+            <SectionLabel text="✏️ Exercícios" />
+            <CardGrid cards={exercicios_visuais.cards} />
+          </div>
+        )}
       </div>
     </div>
   );
